@@ -1,0 +1,553 @@
+{
+  "name": "AI Crypto Futures Trading Bot",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 4
+            }
+          ]
+        }
+      },
+      "id": "node-cron-trigger",
+      "name": "Every 4 Hours",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "http://localhost:8000/api/v1/scan",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "node-scan",
+      "name": "Scan Market",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "check-coins-found",
+              "leftValue": "={{ $json.count }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "node-check-coins",
+      "name": "Coins Found?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Select the top-ranked coin (highest score)\nconst coins = $input.first().json.coins;\nif (!coins || coins.length === 0) {\n  throw new Error('No coins returned from scanner');\n}\n\n// Sort by score descending and pick best\nconst sorted = [...coins].sort((a, b) => b.score - a.score);\nconst top = sorted[0];\n\nconsole.log(`Selected coin: ${top.symbol} with score ${top.score}`);\n\nreturn [{ json: top }];"
+      },
+      "id": "node-select-coin",
+      "name": "Select Top Coin",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [900, 220]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:8000/api/v1/analyze",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"symbol\": \"{{ $json.symbol }}\",\n  \"price_change_pct\": {{ $json.price_change_pct }},\n  \"volume_24h\": {{ $json.volume_24h }},\n  \"score\": {{ $json.score }},\n  \"spread_pct\": {{ $json.spread_pct }},\n  \"bid\": {{ $json.bid }},\n  \"ask\": {{ $json.ask }}\n}",
+        "options": {
+          "timeout": 90000
+        }
+      },
+      "id": "node-analyze",
+      "name": "Analyze Coin",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1120, 220]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract and flatten all data needed for execution\nconst data = $input.first().json;\n\nconst indicators = data.indicators;\nconst orderbook  = data.orderbook;\nconst ai         = data.ai_decision;\n\nconst payload = {\n  // Scanner fields (passed through from previous node)\n  symbol:            data.symbol,\n  price_change_pct:  indicators.current_price ? 0 : 0, // will use spread below\n  volume_24h:        0,  // fetched from scanner, re-attach below\n  score:             0,\n  spread_pct:        0,\n  bid:               0,\n  ask:               0,\n\n  // Indicators\n  current_price:     indicators.current_price,\n  atr:               indicators.volatility.atr,\n  atr_pct:           indicators.volatility.atr_pct,\n  trend_direction:   indicators.trend.direction,\n\n  // Order book\n  orderbook_bias:        orderbook.bias,\n  suggested_long_sl:     orderbook.suggested_long_sl,\n  suggested_short_sl:    orderbook.suggested_short_sl,\n\n  // AI decision\n  decision:    ai.decision,\n  confidence:  ai.confidence,\n  risk_level:  ai.risk_level,\n  reason:      ai.reason\n};\n\nconsole.log(`AI Decision: ${ai.decision} (${ai.confidence}%) — ${ai.reason}`);\n\nreturn [{ json: payload }];"
+      },
+      "id": "node-parse-analysis",
+      "name": "Parse Analysis",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1340, 220]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "check-not-hold",
+              "leftValue": "={{ $json.decision }}",
+              "rightValue": "HOLD",
+              "operator": {
+                "type": "string",
+                "operation": "notEquals"
+              }
+            },
+            {
+              "id": "check-confidence",
+              "leftValue": "={{ $json.confidence }}",
+              "rightValue": 70,
+              "operator": {
+                "type": "number",
+                "operation": "gte"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "node-check-decision",
+      "name": "Trade Signal?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1560, 220]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:8000/api/v1/execute",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "node-execute",
+      "name": "Execute Trade",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1780, 140]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "check-executed",
+              "leftValue": "={{ $json.status }}",
+              "rightValue": "executed",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "node-check-executed",
+      "name": "Trade Executed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [2000, 140]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build Telegram success message\nconst d = $input.first().json;\nconst side  = d.side === 'BUY' ? '🟢 LONG' : '🔴 SHORT';\nconst rr    = d.risk_reward ? `${d.risk_reward}:1` : 'N/A';\n\nconst message = [\n  `✅ <b>TRADE OPENED</b>`,\n  `Symbol: <b>${d.symbol}</b>`,\n  `Direction: <b>${side}</b>`,\n  `Entry: <b>$${parseFloat(d.entry_price).toFixed(6)}</b>`,\n  `Stop Loss: $${parseFloat(d.stop_loss).toFixed(6)}`,\n  `Take Profit: $${parseFloat(d.take_profit).toFixed(6)}`,\n  `Leverage: ${d.leverage}x`,\n  `Risk/Reward: ${rr}`,\n  `Confidence: ${d.confidence}%`,\n  `Order ID: ${d.order_id}`\n].join('\\n');\n\nreturn [{ json: { message } }];"
+      },
+      "id": "node-build-success-msg",
+      "name": "Build Success Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2220, 80]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $vars.TELEGRAM_CHAT_ID }}",
+        "text": "={{ $json.message }}",
+        "additionalFields": {
+          "parse_mode": "HTML"
+        }
+      },
+      "id": "node-telegram-success",
+      "name": "Telegram: Trade Opened",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.1,
+      "position": [2440, 80],
+      "credentials": {
+        "telegramApi": {
+          "id": "telegram-creds",
+          "name": "Telegram Bot"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build skipped/error message\nconst d = $input.first().json;\nconst reason = d.reason || d.message || 'Unknown reason';\nconst checks = d.checks ? `\\nFailed checks:\\n${d.checks.join('\\n')}` : '';\n\nconst message = [\n  `⏭️ <b>TRADE SKIPPED</b>`,\n  `Symbol: ${d.symbol || 'N/A'}`,\n  `Reason: <i>${reason}</i>${checks}`\n].join('\\n');\n\nreturn [{ json: { message } }];"
+      },
+      "id": "node-build-skip-msg",
+      "name": "Build Skip Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2220, 200]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $vars.TELEGRAM_CHAT_ID }}",
+        "text": "={{ $json.message }}",
+        "additionalFields": {
+          "parse_mode": "HTML"
+        }
+      },
+      "id": "node-telegram-skip",
+      "name": "Telegram: Trade Skipped",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.1,
+      "position": [2440, 200],
+      "credentials": {
+        "telegramApi": {
+          "id": "telegram-creds",
+          "name": "Telegram Bot"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Log HOLD decision to console/log\nconst d = $input.first().json;\nconsole.log(`HOLD signal for ${d.symbol}: confidence=${d.confidence}%, reason=${d.reason}`);\n\nconst message = [\n  `🤚 <b>NO TRADE — HOLD</b>`,\n  `Symbol: ${d.symbol}`,\n  `AI Confidence: ${d.confidence}%`,\n  `Reason: <i>${d.reason}</i>`\n].join('\\n');\n\nreturn [{ json: { message } }];"
+      },
+      "id": "node-hold-log",
+      "name": "Log HOLD Decision",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1780, 320]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $vars.TELEGRAM_CHAT_ID }}",
+        "text": "={{ $json.message }}",
+        "additionalFields": {
+          "parse_mode": "HTML"
+        }
+      },
+      "id": "node-telegram-hold",
+      "name": "Telegram: HOLD",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.1,
+      "position": [2000, 320],
+      "credentials": {
+        "telegramApi": {
+          "id": "telegram-creds",
+          "name": "Telegram Bot"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// No coins found after scanning\nconsole.log('Scanner returned 0 coins — market conditions not suitable');\n\nconst message = [\n  `🔍 <b>SCAN COMPLETE — NO CANDIDATES</b>`,\n  `No coins passed the quality filters.`,\n  `Next scan in 4 hours.`\n].join('\\n');\n\nreturn [{ json: { message } }];"
+      },
+      "id": "node-no-coins",
+      "name": "No Coins Found",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [900, 400]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $vars.TELEGRAM_CHAT_ID }}",
+        "text": "={{ $json.message }}",
+        "additionalFields": {
+          "parse_mode": "HTML"
+        }
+      },
+      "id": "node-telegram-no-coins",
+      "name": "Telegram: No Coins",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.1,
+      "position": [1120, 400],
+      "credentials": {
+        "telegramApi": {
+          "id": "telegram-creds",
+          "name": "Telegram Bot"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Handle any upstream error\nconst error = $input.first();\nconsole.error('Workflow error:', JSON.stringify(error.json));\n\nconst message = [\n  `⚠️ <b>BOT ERROR</b>`,\n  `Error: <code>${JSON.stringify(error.json).substring(0, 400)}</code>`\n].join('\\n');\n\nreturn [{ json: { message } }];"
+      },
+      "id": "node-error-handler",
+      "name": "Error Handler",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [680, 500]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $vars.TELEGRAM_CHAT_ID }}",
+        "text": "={{ $json.message }}",
+        "additionalFields": {
+          "parse_mode": "HTML"
+        }
+      },
+      "id": "node-telegram-error",
+      "name": "Telegram: Error Alert",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.1,
+      "position": [900, 500],
+      "credentials": {
+        "telegramApi": {
+          "id": "telegram-creds",
+          "name": "Telegram Bot"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Every 4 Hours": {
+      "main": [
+        [
+          {
+            "node": "Scan Market",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Scan Market": {
+      "main": [
+        [
+          {
+            "node": "Coins Found?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Coins Found?": {
+      "main": [
+        [
+          {
+            "node": "Select Top Coin",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "No Coins Found",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Select Top Coin": {
+      "main": [
+        [
+          {
+            "node": "Analyze Coin",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Analyze Coin": {
+      "main": [
+        [
+          {
+            "node": "Parse Analysis",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Analysis": {
+      "main": [
+        [
+          {
+            "node": "Trade Signal?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Trade Signal?": {
+      "main": [
+        [
+          {
+            "node": "Execute Trade",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log HOLD Decision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute Trade": {
+      "main": [
+        [
+          {
+            "node": "Trade Executed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Trade Executed?": {
+      "main": [
+        [
+          {
+            "node": "Build Success Message",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Skip Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Success Message": {
+      "main": [
+        [
+          {
+            "node": "Telegram: Trade Opened",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Skip Message": {
+      "main": [
+        [
+          {
+            "node": "Telegram: Trade Skipped",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log HOLD Decision": {
+      "main": [
+        [
+          {
+            "node": "Telegram: HOLD",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "No Coins Found": {
+      "main": [
+        [
+          {
+            "node": "Telegram: No Coins",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Error Handler": {
+      "main": [
+        [
+          {
+            "node": "Telegram: Error Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "node-error-handler"
+  },
+  "staticData": null,
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "crypto-bot-001"
+  },
+  "pinData": {},
+  "versionId": "1.0.0",
+  "triggerCount": 0,
+  "tags": [
+    {
+      "createdAt": "2024-01-01T00:00:00.000Z",
+      "updatedAt": "2024-01-01T00:00:00.000Z",
+      "id": "tag-crypto-bot",
+      "name": "crypto-trading"
+    }
+  ]
+}
