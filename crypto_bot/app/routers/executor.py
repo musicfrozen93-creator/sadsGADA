@@ -1,6 +1,6 @@
 """
-Executor API endpoint
-Applies risk engine, safety filters, and executes trades on Binance
+Executor API endpoint — Scalping mode
+Integrates dynamic risk management, daily limits, duplicate protection.
 """
 
 import logging
@@ -8,11 +8,11 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Optional
 
-from app.modules.risk_engine import RiskEngine, SafetyFilter
-from app.modules.executor   import BinanceExecutor
-from app.modules.telegram   import TelegramNotifier
-from app.utils.state        import state_manager
-from app.config             import settings
+from app.modules.risk_engine import RiskEngine, TradeParameters
+from app.modules.executor import BinanceExecutor
+from app.modules.telegram import TelegramNotifier
+from app.utils.state import state_manager
+from app.config import settings
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -21,61 +21,68 @@ logger = logging.getLogger(__name__)
 class ExecuteRequest(BaseModel):
     # From scanner
     symbol: str
-    price_change_pct: float
-    volume_24h: float
-    score: float
-    spread_pct: float
-    bid: float
-    ask: float
-    # From analyzer
-    current_price: float
-    atr: float
-    atr_pct: float
-    trend_direction: str
-    orderbook_bias: str
-    suggested_long_sl: float
-    suggested_short_sl: float
-    # From AI
-    decision: str      # BUY | SELL | HOLD
+    spread_pct: float = 0.0
+    volume_24h: float = 0.0
+    # From scalping analyzer
+    action: str          # BUY | SELL | HOLD
     confidence: int
-    risk_level: str
     reason: str
+    current_price: float
+    atr: float = 0.0
+    atr_pct: float = 0.0
 
 
 @router.post("/execute")
 async def execute_trade(req: ExecuteRequest):
     """
-    Main execution endpoint:
-    1. Apply risk engine to compute parameters
-    2. Run safety filter checks
-    3. Execute trade if approved
-    4. Send Telegram notification
+    Scalping execution:
+    1. Check daily risk limits
+    2. Check duplicate trades
+    3. Apply dynamic risk engine
+    4. Execute trade
+    5. Send Telegram notification
     """
     telegram = TelegramNotifier()
-    state    = state_manager.state
 
-    # ── Early exits ──────────────────────────────────────────────────
-    if req.decision == "HOLD":
-        await telegram.trade_skipped(req.symbol, f"AI decision: HOLD — {req.reason}")
-        return {"status": "skipped", "reason": "AI decided HOLD"}
-
-    if req.confidence < settings.MIN_CONFIDENCE:
-        msg = f"Confidence {req.confidence} < minimum {settings.MIN_CONFIDENCE}"
-        await telegram.trade_skipped(req.symbol, msg)
-        return {"status": "skipped", "reason": msg}
-
-    # ── Risk engine ───────────────────────────────────────────────────
-    side = "BUY" if req.decision == "BUY" else "SELL"
-    orderbook_sl = (
-        req.suggested_long_sl  if side == "BUY" else req.suggested_short_sl
-    )
-
-    # Get live balance
+    # ── Daily risk control ───────────────────────────────────────────
     try:
         binance = BinanceExecutor()
         balance = await binance.get_account_balance()
     except Exception:
-        balance = settings.ACCOUNT_BALANCE  # Fallback to config
+        balance = settings.ACCOUNT_BALANCE
+
+    daily_check = state_manager.check_daily_limits(balance)
+    if not daily_check["allowed"]:
+        await telegram.trading_paused(daily_check["reason"])
+        return {"status": "trading_paused", "reason": daily_check["reason"]}
+
+    # ── HOLD check ───────────────────────────────────────────────────
+    if req.action == "HOLD":
+        return {"status": "skipped", "reason": f"HOLD — {req.reason}"}
+
+    # ── Confidence check ─────────────────────────────────────────────
+    if req.confidence < settings.MIN_CONFIDENCE:
+        msg = f"Confidence {req.confidence} < minimum {settings.MIN_CONFIDENCE}"
+        return {"status": "skipped", "reason": msg}
+
+    # ── Duplicate trade protection ───────────────────────────────────
+    if state_manager.is_duplicate_trade(req.symbol):
+        msg = f"Duplicate: {req.symbol} was in last 2 trades — skipping"
+        await telegram.trade_skipped(req.symbol, msg)
+        return {"status": "skipped", "reason": msg}
+
+    # ── Open position check ──────────────────────────────────────────
+    try:
+        has_position = await binance.has_open_position(req.symbol)
+        if has_position:
+            msg = f"Already have open position on {req.symbol}"
+            await telegram.trade_skipped(req.symbol, msg)
+            return {"status": "skipped", "reason": msg}
+    except Exception as e:
+        logger.warning(f"Position check failed: {e}")
+
+    # ── Dynamic risk engine ──────────────────────────────────────────
+    side = "BUY" if req.action == "BUY" else "SELL"
 
     risk_engine = RiskEngine()
     trade_params = risk_engine.calculate(
@@ -83,8 +90,7 @@ async def execute_trade(req: ExecuteRequest):
         side=side,
         confidence=req.confidence,
         entry_price=req.current_price,
-        atr=req.atr,
-        orderbook_sl=orderbook_sl,
+        atr_pct=req.atr_pct,
         account_balance=balance,
     )
 
@@ -92,37 +98,23 @@ async def execute_trade(req: ExecuteRequest):
         await telegram.trade_skipped(req.symbol, trade_params.reject_reason)
         return {"status": "skipped", "reason": trade_params.reject_reason}
 
-    # ── Safety filter ─────────────────────────────────────────────────
-    safety = SafetyFilter(last_traded_symbol=state.last_traded_symbol)
-    safety_result = safety.check(
-        symbol=req.symbol,
-        atr_pct=req.atr_pct,
-        spread_pct=req.spread_pct,
-        has_open_trade=state.has_open_trade,
-        scanner_data={"volume_24h": req.volume_24h},
-    )
-
-    if not safety_result.passed:
-        reason = " | ".join(safety_result.failed_checks)
-        await telegram.trade_skipped(req.symbol, reason)
-        return {"status": "skipped", "reason": reason, "checks": safety_result.failed_checks}
-
-    # ── Execute ───────────────────────────────────────────────────────
+    # ── Execute ──────────────────────────────────────────────────────
     result = await binance.execute_trade(trade_params)
 
     if result.success:
         state_manager.open_trade(req.symbol)
-        await telegram.trade_executed(
+
+        await telegram.scalp_trade(
             symbol=req.symbol,
-            side=side,
-            qty=trade_params.quantity,
-            entry=req.current_price,
-            sl=trade_params.stop_loss,
-            tp=trade_params.take_profit,
-            leverage=trade_params.leverage,
+            action=side,
             confidence=req.confidence,
+            entry_price=req.current_price,
+            take_profit=trade_params.take_profit,
+            stop_loss=trade_params.stop_loss,
+            leverage=trade_params.leverage,
             reason=req.reason,
         )
+
         return {
             "status": "executed",
             "order_id": result.order_id,

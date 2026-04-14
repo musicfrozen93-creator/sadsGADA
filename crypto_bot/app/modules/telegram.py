@@ -1,5 +1,5 @@
 """
-Telegram Notification Module (PRO VERSION)
+Telegram Notification Module — Scalping Format
 """
 
 import logging
@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 class TelegramNotifier:
 
     def __init__(self):
-        self.token   = settings.TELEGRAM_BOT_TOKEN
+        self.token = settings.TELEGRAM_BOT_TOKEN
         self.chat_id = settings.TELEGRAM_CHAT_ID
         self.base_url = f"https://api.telegram.org/bot{self.token}"
 
@@ -37,70 +37,49 @@ class TelegramNotifier:
             logger.error(f"Telegram notification failed: {e}")
             return False
 
-    # 🚀 TRADE EXECUTED (UPGRADED - DYNAMIC TP/SL)
-    async def trade_executed(
+    async def scalp_trade(
         self,
         symbol: str,
-        side: str,
-        qty: float,
-        entry: float,
-        sl: float,
-        tp: float,
-        leverage: int,
+        action: str,
         confidence: int,
-        reason: str
+        entry_price: float,
+        take_profit: float,
+        stop_loss: float,
+        leverage: int,
+        reason: str,
     ):
-        emoji = "🟢" if side == "BUY" else "🔴"
-
-        msg = f"""
-{emoji} <b>SCALP TRADE EXECUTED</b>
-
-<b>Symbol:</b> {symbol}
-<b>Side:</b> {side}
-<b>Leverage:</b> {leverage}x
-
-<b>Entry:</b> ${entry:,.6f}
-🛑 <b>Stop Loss:</b> ${sl:,.6f}
-🎯 <b>Take Profit:</b> ${tp:,.6f}
-
-<b>Quantity:</b> {qty}
-<b>Confidence:</b> {confidence}%
-
-<i>{reason}</i>
-"""
-        await self.send(msg)
-
-    # ⏭️ TRADE SKIPPED (CLEAN)
-    async def trade_skipped(self, symbol: str, reason: str):
-        msg = f"""
-⏭️ <b>TRADE SKIPPED</b>
-
-<b>Symbol:</b> {symbol}
-<i>{reason}</i>
-"""
-        await self.send(msg)
-
-    # ⚠️ ERROR ALERT
-    async def error_alert(self, context: str, error: str):
-        msg = f"""
-⚠️ <b>ERROR</b>
-
-<b>Context:</b> {context}
-<code>{error[:300]}</code>
-"""
-        await self.send(msg)
-
-    # 🔍 SCAN RESULT (IMPROVED)
-    async def scan_complete(self, top_coins: list):
-        coins_str = "\n".join(
-            f"{i+1}. <b>{c['symbol']}</b> | score={c['score']} | Δ={c['price_change_pct']}%"
-            for i, c in enumerate(top_coins)
+        msg = (
+            f"🚀 <b>SCALP TRADE</b>\n\n"
+            f"Symbol: <b>{symbol}</b>\n"
+            f"Action: <b>{action}</b>\n"
+            f"Confidence: <b>{confidence}%</b>\n\n"
+            f"Entry: <b>${entry_price:,.6f}</b>\n"
+            f"TP: <b>${take_profit:,.6f}</b>\n"
+            f"SL: <b>${stop_loss:,.6f}</b>\n"
+            f"Leverage: <b>{leverage}x</b>\n\n"
+            f"Reason: <i>{reason}</i>"
         )
+        await self.send(msg)
 
-        msg = f"""
-🔍 <b>SCAN COMPLETE</b>
+    async def trade_skipped(self, symbol: str, reason: str):
+        msg = (
+            f"⏭️ <b>TRADE SKIPPED</b>\n"
+            f"Symbol: {symbol}\n"
+            f"Reason: <i>{reason}</i>"
+        )
+        await self.send(msg)
 
-Top Coins:
-{coins_str}
-"""
+    async def trading_paused(self, reason: str):
+        msg = (
+            f"⛔ <b>TRADING PAUSED</b>\n\n"
+            f"Reason: <i>{reason}</i>"
+        )
+        await self.send(msg)
+
+    async def error_alert(self, context: str, error: str):
+        msg = (
+            f"⚠️ <b>ERROR</b>\n"
+            f"Context: {context}\n"
+            f"Error: <code>{error[:300]}</code>"
+        )
         await self.send(msg)
