@@ -1,51 +1,95 @@
-async def scan(self, top_n: int = 5) -> list[dict]:
-    """
-    Scalping-optimized scan.
-    Returns top coins but introduces randomness to avoid same coin repetition.
-    """
-    logger.info("🔍 Starting market scan (SCALPING MODE)...")
+import asyncio
+import random
+import logging
+import httpx
 
-    tickers = await self.get_all_tickers()
-    logger.info(f"Total USDT pairs fetched: {len(tickers)}")
+logger = logging.getLogger(__name__)
 
-    # First-pass filter
-    candidates = [c for t in tickers if (c := self.passes_filters(t)) is not None]
-    logger.info(f"Candidates after basic filters: {len(candidates)}")
 
-    # Enrich
-    tasks = [self.enrich_with_spread_and_trend(c) for c in candidates]
-    enriched = await asyncio.gather(*tasks)
-    valid = [c for c in enriched if c is not None]
+class MarketScanner:
 
-    logger.info(f"Candidates after spread/trend filter: {len(valid)}")
+    BASE_URL = "https://fapi.binance.com"
 
-    # 🔥 SORT ALL
-    sorted_coins = sorted(valid, key=lambda x: x.score, reverse=True)
+    async def get_all_tickers(self):
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(f"{self.BASE_URL}/fapi/v1/ticker/24hr")
+            return resp.json()
 
-    # 🔥 TAKE TOP 10 (SCALPING POOL)
-    top_10 = sorted_coins[:10]
+    def passes_filters(self, ticker):
+        try:
+            volume = float(ticker["quoteVolume"])
+            change = abs(float(ticker["priceChangePercent"]))
 
-    import random
+            # basic filters
+            if volume < 10_000_000:
+                return None
+            if change < 0.5:
+                return None
 
-    # 🔥 RANDOM PICK FROM TOP 5
-    selection_pool = top_10[:5] if len(top_10) >= 5 else top_10
-    selected = random.choice(selection_pool) if selection_pool else None
+            return {
+                "symbol": ticker["symbol"],
+                "price": float(ticker["lastPrice"]),
+                "volume_24h": volume,
+                "price_change_pct": float(ticker["priceChangePercent"]),
+            }
 
-    if not selected:
-        logger.warning("No valid coin found")
-        return []
+        except:
+            return None
 
-    logger.info(f"🎯 Selected coin for trade: {selected.symbol}")
+    async def enrich_with_spread_and_trend(self, coin):
+        try:
+            async with httpx.AsyncClient() as client:
+                depth = await client.get(
+                    f"{self.BASE_URL}/fapi/v1/depth",
+                    params={"symbol": coin["symbol"], "limit": 5}
+                )
+                data = depth.json()
 
-    # Return as single-item list (important for n8n compatibility)
-    return [{
-        "symbol": selected.symbol,
-        "price": selected.price,
-        "volume_24h": selected.volume_24h,
-        "price_change_pct": selected.price_change_pct,
-        "spread_pct": selected.spread_pct,
-        "trend_strength": selected.trend_strength,
-        "score": selected.score,
-        "bid": selected.bid,
-        "ask": selected.ask,
-    }]
+            bid = float(data["bids"][0][0])
+            ask = float(data["asks"][0][0])
+
+            spread_pct = (ask - bid) / bid * 100
+
+            # simple trend score
+            trend_strength = abs(coin["price_change_pct"])
+
+            score = coin["volume_24h"] * trend_strength
+
+            return {
+                **coin,
+                "bid": bid,
+                "ask": ask,
+                "spread_pct": spread_pct,
+                "trend_strength": trend_strength,
+                "score": score,
+            }
+
+        except:
+            return None
+
+    async def scan(self, top_n: int = 5) -> list[dict]:
+
+        logger.info("🔍 Starting market scan (SCALPING MODE)...")
+
+        tickers = await self.get_all_tickers()
+
+        candidates = [c for t in tickers if (c := self.passes_filters(t)) is not None]
+
+        tasks = [self.enrich_with_spread_and_trend(c) for c in candidates]
+        enriched = await asyncio.gather(*tasks)
+
+        valid = [c for c in enriched if c is not None]
+
+        sorted_coins = sorted(valid, key=lambda x: x["score"], reverse=True)
+
+        top_10 = sorted_coins[:10]
+
+        selection_pool = top_10[:5] if len(top_10) >= 5 else top_10
+        selected = random.choice(selection_pool) if selection_pool else None
+
+        if not selected:
+            return []
+
+        logger.info(f"🎯 Selected coin: {selected['symbol']}")
+
+        return [selected]
