@@ -1,6 +1,7 @@
+from app.modules.risk_engine import TradeParameters
+from app.models.order import OrderResult
 # ✅ Track last traded symbols
 last_trades = []
-
 
 async def execute_trade(self, params: TradeParameters) -> OrderResult:
     """
