@@ -1,10 +1,9 @@
 """
-Simplified Scalping Risk Engine (Hybrid Safe Version)
+Smart Scalping Risk Engine (Dynamic + Profit Optimized)
 """
 
 import logging
 from dataclasses import dataclass
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -36,8 +35,8 @@ class SafetyCheckResult:
 
 class RiskEngine:
     """
-    Simplified scalping risk engine.
-    Fast decisions + basic protection.
+    Smart scalping risk engine.
+    Dynamic TP/SL + adaptive leverage + better profit margins.
     """
 
     def calculate(
@@ -47,30 +46,37 @@ class RiskEngine:
         confidence: int,
         entry_price: float,
         account_balance: float,
+        atr_pct: float = 1.0,
         quantity_precision: int = 3,
     ) -> TradeParameters:
 
-        # 🔥 FIXED SAFE SETTINGS
-        trade_size = min(2, account_balance * 0.1)
+        # 🔥 dynamic trade size
+        trade_size = max(2, account_balance * 0.1)
 
-        # 🔥 leverage based on confidence
+        # 🔥 leverage tuning
         if confidence >= 80:
-            leverage = 4
+            leverage = 5
         elif confidence >= 65:
-            leverage = 3
+            leverage = 4
         else:
-            leverage = 2
+            leverage = 3
 
-        # 🔥 SCALPING TP / SL
-        take_profit = entry_price * 1.015
-        stop_loss   = entry_price * 0.985
+        # 🔥 volatility factor (ATR)
+        volatility = atr_pct / 100 if atr_pct else 0.01
 
-        # 🔥 quantity calc
+        # 🔥 TP/SL (fees-aware)
+        tp_multiplier = 2.0 + (confidence / 100)   # 2.0 → 3.0 range
+        sl_multiplier = 1.2
+
+        take_profit = entry_price * (1 + volatility * tp_multiplier)
+        stop_loss   = entry_price * (1 - volatility * sl_multiplier)
+
+        # 🔥 quantity calculation
         raw_qty = trade_size / entry_price
         quantity = round(raw_qty, quantity_precision)
 
         logger.info(
-            f"Scalp Trade → {symbol} | lev={leverage}x | size={trade_size}$ | SL={stop_loss} | TP={take_profit}"
+            f"SMART Trade → {symbol} | lev={leverage}x | size={trade_size}$ | SL={stop_loss} | TP={take_profit}"
         )
 
         return TradeParameters(
