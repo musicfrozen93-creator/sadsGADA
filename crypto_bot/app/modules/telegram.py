@@ -1,6 +1,5 @@
 """
-Telegram Notification Module
-Sends trade alerts, errors, and status updates to a Telegram chat
+Telegram Notification Module (PRO VERSION)
 """
 
 import logging
@@ -38,43 +37,70 @@ class TelegramNotifier:
             logger.error(f"Telegram notification failed: {e}")
             return False
 
-    async def trade_executed(self, symbol: str, side: str, qty: float, entry: float,
-                              sl: float, tp: float, leverage: int, confidence: int, reason: str):
+    # 🚀 TRADE EXECUTED (UPGRADED - DYNAMIC TP/SL)
+    async def trade_executed(
+        self,
+        symbol: str,
+        side: str,
+        qty: float,
+        entry: float,
+        sl: float,
+        tp: float,
+        leverage: int,
+        confidence: int,
+        reason: str
+    ):
         emoji = "🟢" if side == "BUY" else "🔴"
-        msg = (
-            f"{emoji} <b>TRADE EXECUTED</b>\n"
-            f"Symbol: <b>{symbol}</b>\n"
-            f"Side: <b>{side} (LONG)</b>\n"
-            f"Quantity: {qty}\n"
-            f"Entry: <b>${entry:,.6f}</b>\n"
-            f"Stop Loss: ${sl:,.6f}\n"
-            f"Take Profit: ${tp:,.6f}\n"
-            f"Leverage: {leverage}x\n"
-            f"AI Confidence: {confidence}%\n"
-            f"Reason: <i>{reason}</i>"
-        )
+
+        msg = f"""
+{emoji} <b>SCALP TRADE EXECUTED</b>
+
+<b>Symbol:</b> {symbol}
+<b>Side:</b> {side}
+<b>Leverage:</b> {leverage}x
+
+<b>Entry:</b> ${entry:,.6f}
+🛑 <b>Stop Loss:</b> ${sl:,.6f}
+🎯 <b>Take Profit:</b> ${tp:,.6f}
+
+<b>Quantity:</b> {qty}
+<b>Confidence:</b> {confidence}%
+
+<i>{reason}</i>
+"""
         await self.send(msg)
 
+    # ⏭️ TRADE SKIPPED (CLEAN)
     async def trade_skipped(self, symbol: str, reason: str):
-        msg = (
-            f"⏭️ <b>TRADE SKIPPED</b>\n"
-            f"Symbol: {symbol}\n"
-            f"Reason: <i>{reason}</i>"
-        )
+        msg = f"""
+⏭️ <b>TRADE SKIPPED</b>
+
+<b>Symbol:</b> {symbol}
+<i>{reason}</i>
+"""
         await self.send(msg)
 
+    # ⚠️ ERROR ALERT
     async def error_alert(self, context: str, error: str):
-        msg = (
-            f"⚠️ <b>ERROR</b>\n"
-            f"Context: {context}\n"
-            f"Error: <code>{error[:300]}</code>"
-        )
+        msg = f"""
+⚠️ <b>ERROR</b>
+
+<b>Context:</b> {context}
+<code>{error[:300]}</code>
+"""
         await self.send(msg)
 
+    # 🔍 SCAN RESULT (IMPROVED)
     async def scan_complete(self, top_coins: list):
         coins_str = "\n".join(
-            f"  {i+1}. {c['symbol']} — score={c['score']} | vol={c['price_change_pct']}%"
+            f"{i+1}. <b>{c['symbol']}</b> | score={c['score']} | Δ={c['price_change_pct']}%"
             for i, c in enumerate(top_coins)
         )
-        msg = f"🔍 <b>SCAN COMPLETE</b>\nTop candidates:\n{coins_str}"
+
+        msg = f"""
+🔍 <b>SCAN COMPLETE</b>
+
+Top Coins:
+{coins_str}
+"""
         await self.send(msg)
