@@ -1,5 +1,5 @@
 from app.modules.risk_engine import TradeParameters
-from app.models.order import OrderResult
+from app.modules.orderbook import OrderResult
 # ✅ Track last traded symbols
 last_trades = []
 
