@@ -11,12 +11,12 @@ logger = logging.getLogger(__name__)
 @router.get("/scan")
 async def scan_market():
     """
-    Scan Binance Futures and return top 3 ranked coins.
-    Called by n8n every 4 hours.
+    Scan Binance Futures and return top 5 ranked coins.
+    Called by n8n every 5 minutes.
     """
     try:
         scanner = MarketScanner()
-        results = await scanner.scan(top_n=3)
+        results = await scanner.scan(top_n=5)
         return {
             "status": "ok",
             "count": len(results),
